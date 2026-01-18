@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@v4
 
       # 🔍 STEP 1 — OIDC DEBUG (THIS IS THE KEY STEP)
+      # Problem with sub case sensitive
       - name: Dump GitHub OIDC claims (safe)
         shell: bash
         run: |
