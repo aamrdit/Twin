@@ -120,6 +120,7 @@ jobs:
 
       # -----------------------------
       # Outputs (nice to have)
+      #setting up the outputs
       # -----------------------------
       - name: Terraform Outputs
         working-directory: terraform
