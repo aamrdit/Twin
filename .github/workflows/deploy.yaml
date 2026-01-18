@@ -42,7 +42,15 @@ jobs:
       - name: Debug OIDC token info
         run: |
           echo "OIDC Request URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
+          echo "OIDC Token (trun
           echo "OIDC Token (truncated): ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:0:10}..."
+
+      - name: Debug OIDC claims
+        run: |
+        echo "Repository: $GITHUB_REPOSITORY"
+        echo "Ref: $GITHUB_REF"
+        echo "Environment: ${{ github.event.inputs.environment }}"
+        echo "Action ID Token: $ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 
       # 3️⃣ Configure AWS credentials using OIDC
       - name: Configure AWS credentials
