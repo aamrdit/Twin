@@ -34,8 +34,13 @@ jobs:
       TF_INPUT: "false"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository (with submodules)
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          # If your frontend submodule is private, uncomment and create a GH_PAT secret:
+          # token: ${{ secrets.GH_PAT }}
 
       # -------------------------------------------------
       # OIDC Debug (AWS audience)
@@ -187,7 +192,7 @@ jobs:
       # -------------------------------------------------
       # Frontend (Next.js static export -> S3)
       # IMPORTANT:
-      # Ensure frontend/next.config.ts includes:
+      # Ensure frontend/next.config.(ts|js) includes:
       #   output: "export"
       #   images: { unoptimized: true }
       # This makes `npm run build` generate frontend/out
@@ -208,18 +213,17 @@ jobs:
 
           if [ ! -d "frontend" ]; then
             echo "❌ frontend directory not found at repo root"
-            echo "Searching for package.json..."
-            find . -maxdepth 4 -name package.json -print || true
             exit 1
           fi
 
+          echo "Frontend dir listing (after submodule checkout):"
+          ls -la frontend
+
           cd frontend
-          echo "Inside frontend:"
-          pwd
-          ls -la
 
           if [ ! -f "package.json" ]; then
-            echo "❌ package.json missing in frontend/"
+            echo "❌ package.json missing in frontend/. Submodule may not have been fetched or is private."
+            echo "If submodule is private, set checkout token via secrets.GH_PAT"
             exit 1
           fi
 
@@ -231,7 +235,7 @@ jobs:
 
           if [ ! -f "out/index.html" ]; then
             echo "❌ out/index.html not found."
-            echo "Make sure next.config.ts has output: \"export\""
+            echo "Make sure next.config is set to output: \"export\""
             exit 1
           fi
 
