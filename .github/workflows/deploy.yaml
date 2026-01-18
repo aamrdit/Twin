@@ -53,7 +53,7 @@ jobs:
           echo "$JWT" | jq -R 'split(".") | .[1] | @base64d | fromjson'
 
       # -------------------------------------------------
-      # AWS Credentials via OIDC (forces aud=sts.amazonaws.com)
+      # AWS Credentials via OIDC
       # -------------------------------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -83,7 +83,7 @@ jobs:
           echo "AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION" >> $GITHUB_ENV
 
       # -------------------------------------------------
-      # Python for Lambda build
+      # Python (Lambda packaging)
       # -------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -139,31 +139,14 @@ jobs:
           set -euo pipefail
           aws sts get-caller-identity
 
-      - name: Terraform AWS identity check (debug)
-        working-directory: terraform
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform providers
-          aws sts get-caller-identity
-
-      # -------------------------------------------------
-      # Terraform Plan (save) — optionally pass environment var to Terraform
-      # If you DO have a Terraform variable named "environment", keep -var line.
-      # If you do NOT, remove the -var argument.
-      # -------------------------------------------------
       - name: Terraform Plan (save)
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
-          ENV="${{ github.event.inputs.environment || 'dev' }}"
-          terraform plan -out=tfplan -var="environment=$ENV"
+          terraform plan -out=tfplan
           terraform show -json tfplan > tfplan.json
 
-      # -------------------------------------------------
-      # Guard: show deletes (for debugging) and block IAM/OIDC deletes
-      # -------------------------------------------------
       - name: Fail if plan deletes GitHub IAM/OIDC (and show deletes)
         working-directory: terraform
         shell: bash
@@ -192,15 +175,76 @@ jobs:
           set -euo pipefail
           terraform apply -auto-approve tfplan
 
-      - name: Terraform Outputs
+      - name: Read Terraform outputs (bucket + cloudfront url)
+        id: tf
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
-          echo "api_gateway_url=$(terraform output -raw api_gateway_url 2>/dev/null || true)"
-          echo "cloudfront_url=$(terraform output -raw cloudfront_url 2>/dev/null || true)"
-          echo "s3_frontend_bucket=$(terraform output -raw s3_frontend_bucket 2>/dev/null || true)"
+          echo "frontend_bucket=$(terraform output -raw s3_frontend_bucket)" >> $GITHUB_OUTPUT
+          echo "cloudfront_url=$(terraform output -raw cloudfront_url)" >> $GITHUB_OUTPUT
+          echo "api_gateway_url=$(terraform output -raw api_gateway_url)" >> $GITHUB_OUTPUT
 
+      # -------------------------------------------------
+      # Frontend (Next.js static export -> S3)
+      # IMPORTANT: Ensure frontend/next.config.ts contains:
+      #   output: 'export'
+      #   images: { unoptimized: true }
+      # This makes `npm run build` generate frontend/out
+      # -------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build Next.js static site (out/)
+        working-directory: frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+          test -f out/index.html
+          echo "✅ out/index.html exists"
+
+      - name: Upload site to S3
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3 sync frontend/out "s3://${{ steps.tf.outputs.frontend_bucket }}/" --delete --region "${AWS_REGION}"
+
+      - name: Invalidate CloudFront (best effort)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUCKET="${{ steps.tf.outputs.frontend_bucket }}"
+
+          DIST_ID=$(aws cloudfront list-distributions \
+            --query "DistributionList.Items[?Origins.Items[?contains(DomainName, \`${BUCKET}\`)]].Id | [0]" \
+            --output text)
+
+          if [ "$DIST_ID" != "None" ] && [ -n "$DIST_ID" ]; then
+            echo "Invalidating CloudFront distribution: $DIST_ID"
+            aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
+          else
+            echo "Could not auto-detect CloudFront distribution id. Skipping invalidation."
+          fi
+
+      - name: Deployment Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "✅ Deployment Complete!"
+          echo "🌐 CloudFront URL: ${{ steps.tf.outputs.cloudfront_url }}"
+          echo "📡 API Gateway:   ${{ steps.tf.outputs.api_gateway_url }}"
+          echo "🪣 Frontend S3:   ${{ steps.tf.outputs.frontend_bucket }}"
+
+      # -------------------------------------------------
+      # If state write fails, Terraform writes terraform/errored.tfstate.
+      # Upload it so you can recover with: terraform state push errored.tfstate
+      # -------------------------------------------------
       - name: Upload errored.tfstate if present
         if: failure()
         uses: actions/upload-artifact@v4
