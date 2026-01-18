@@ -17,118 +17,47 @@ on:
 
 jobs:
   deploy:
-    permissions:
-      id-token: write       # Required for OIDC
-      contents: read
     name: Deploy to ${{ github.event.inputs.environment || 'dev' }}
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment || 'dev' }}
 
+    permissions:
+      id-token: write
+      contents: read
+
     steps:
-      # 1️⃣ Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2️⃣ Validate OIDC token (pre-flight)
-      - name: Validate GitHub OIDC Token
+      # 🔍 STEP 1 — OIDC DEBUG (THIS IS THE KEY STEP)
+      - name: Dump GitHub OIDC claims (safe)
+        shell: bash
         run: |
-          if [ -z "$ACTIONS_ID_TOKEN_REQUEST_URL" ] || [ -z "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" ]; then
-            echo "❌ OIDC token not available! Check job permissions and repo source."
-            exit 1
-          fi
-          echo "✅ OIDC token available. Proceeding with AWS role assumption."
+          echo "Requesting OIDC token..."
+          TOKEN=$(curl -sSL \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL")
 
-      # Optional debug step
-      - name: Debug OIDC token info
-        run: |
-          echo "OIDC Request URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
-          echo "OIDC Token (trun
-          echo "OIDC Token (truncated): ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:0:10}..."
+          echo "Decoded OIDC claims:"
+          echo "$TOKEN" | jq -R 'split(".") | .[1] | @base64d | fromjson'
 
-      - name: Debug OIDC claims
-        run: |
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Ref: $GITHUB_REF"
-          echo "Environment: ${{ github.event.inputs.environment }}"
-          echo "Action ID Token: $ACTIONS_ID_TOKEN_REQUEST_TOKEN"
-
-      # 3️⃣ Configure AWS credentials using OIDC
+      # ✅ AWS OIDC ASSUME ROLE
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::246728976544:role/github-actions-twin-deploy
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: github-actions-deploy
-          aws-region: eu-central-1
+          aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
 
-      # 4️⃣ Set up Python
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      # 5️⃣ Install uv tool
-      - name: Install uv
-        run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      # 6️⃣ Set up Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
 
-      # 7️⃣ Terraform Pre-Flight: Backend + Workspace + Plan
-      - name: Terraform Pre-Flight
-        working-directory: ./terraform
-        run: |
-          terraform init -backend-config="bucket=twin-terraform-state-246728976544" \
-                          -backend-config="key=terraform.tfstate" \
-                          -backend-config="region=eu-central-1" \
-                          -backend-config="dynamodb_table=twin-terraform-locks" \
-                          -reconfigure
-          terraform workspace select ${{ github.event.inputs.environment || 'dev' }} -or-create
-          terraform plan
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init -input=false
 
-      # 8️⃣ Set up Node.js
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      # 9️⃣ Run Deployment Script
-      - name: Run Deployment Script
-        run: |
-          chmod +x scripts/deploy.sh
-          ./scripts/deploy.sh ${{ github.event.inputs.environment || 'dev' }}
-
-      # 🔟 Capture Terraform Outputs
-      - name: Get Deployment URLs
-        id: deploy_outputs
-        working-directory: ./terraform
-        run: |
-          terraform workspace select ${{ github.event.inputs.environment || 'dev' }}
-          echo "cloudfront_url=$(terraform output -raw cloudfront_url)" >> $GITHUB_OUTPUT
-          echo "api_url=$(terraform output -raw api_gateway_url)" >> $GITHUB_OUTPUT
-          echo "frontend_bucket=$(terraform output -raw s3_frontend_bucket)" >> $GITHUB_OUTPUT
-
-      # 1️⃣1️⃣ CloudFront Invalidation
-      - name: Invalidate CloudFront
-        run: |
-          DISTRIBUTION_ID=$(aws cloudfront list-distributions \
-            --query "DistributionList.Items[?Origins.Items[?DomainName=='${{ steps.deploy_outputs.outputs.frontend_bucket }}.s3-website-${{ env.AWS_REGION }}.amazonaws.com']].Id | [0]" \
-            --output text)
-          if [ "$DISTRIBUTION_ID" != "None" ] && [ -n "$DISTRIBUTION_ID" ]; then
-            aws cloudfront create-invalidation \
-              --distribution-id $DISTRIBUTION_ID \
-              --paths "/*"
-
-      # 1️⃣2️⃣ Deployment Summary
-      - name: Deployment Summary
-        run: |
-          echo "✅ Deployment Complete!"
-          echo "🌐 CloudFront URL: ${{ steps.deploy_outputs.outputs.cloudfront_url }}"
-          echo "📡 API Gateway: ${{ steps.deploy_outputs.outputs.api_url }}"
-          echo "🪣 Frontend Bucket: ${{ steps.deploy_outputs.outputs.frontend_bucket }}"
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve
