@@ -123,3 +123,9 @@ jobs:
           echo "🌐 CloudFront URL: ${{ steps.deploy_outputs.outputs.cloudfront_url }}"
           echo "📡 API Gateway: ${{ steps.deploy_outputs.outputs.api_url }}"
           echo "🪣 Frontend Bucket: ${{ steps.deploy_outputs.outputs.frontend_bucket }}"
+
+      # 1️⃣3️⃣ Debug OIDC token
+      - name: Debug OIDC token
+        run: |
+          echo "OIDC Request URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
+          echo "OIDC Token (truncated): ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:0:10}..."
