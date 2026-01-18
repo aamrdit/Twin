@@ -29,12 +29,15 @@ jobs:
       AWS_REGION: eu-central-1
 
     steps:
+      # -----------------------------
+      # Checkout
+      # -----------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -------------------------------------------------
+      # -----------------------------
       # OIDC Debug (requests token with AWS audience)
-      # -------------------------------------------------
+      # -----------------------------
       - name: Dump GitHub OIDC claims (debug, AWS audience)
         shell: bash
         run: |
@@ -44,15 +47,14 @@ jobs:
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
 
-          # TOKEN_JSON is a JSON string that contains a 'value' field holding the JWT
           JWT=$(echo "$TOKEN_JSON" | jq -r '.value')
 
           echo "Decoded OIDC claims:"
           echo "$JWT" | jq -R 'split(".") | .[1] | @base64d | fromjson'
 
-      # -------------------------------------------------
+      # -----------------------------
       # AWS Credentials via OIDC (forces aud=sts.amazonaws.com)
-      # -------------------------------------------------
+      # -----------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -61,26 +63,42 @@ jobs:
           aws-region: eu-central-1
           audience: sts.amazonaws.com
 
-      # -------------------------------------------------
+      # -----------------------------
+      # Verify credentials immediately after assume-role
+      # -----------------------------
+      - name: Verify AWS creds are active (post-assume)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Post-assume identity:"
+          aws sts get-caller-identity
+          echo "AWS_REGION=$AWS_REGION"
+          echo "AWS_ACCESS_KEY_ID is set: ${AWS_ACCESS_KEY_ID:+yes}"
+
+      # -----------------------------
       # Python for Lambda build
-      # -------------------------------------------------
+      # -----------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # -------------------------------------------------
+      # -----------------------------
       # Build Lambda deployment package
       # Source: backend/lambda-package
       # Deps:   backend/requirements.txt
-      # Output: backend/lambda-deployment.zip
-      # -------------------------------------------------
+      # Output: backend/lambda-deployment.zip (Terraform expects this)
+      # -----------------------------
       - name: Build Lambda ZIP
         shell: bash
         run: |
           set -euo pipefail
 
           echo "Building Lambda deployment package..."
+          echo "Backend folder contents:"
+          ls -la backend
+          echo "Lambda source folder contents:"
+          ls -la backend/lambda-package
 
           rm -rf backend/.lambda_build
           mkdir -p backend/.lambda_build
@@ -88,7 +106,7 @@ jobs:
           # Copy lambda source code
           cp -R backend/lambda-package/. backend/.lambda_build/
 
-          # Install dependencies from backend/requirements.txt
+          # Install dependencies
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt -t backend/.lambda_build
 
@@ -98,10 +116,9 @@ jobs:
           echo "Built zip:"
           ls -lh backend/lambda-deployment.zip
 
-      # -------------------------------------------------
+      # -----------------------------
       # Terraform
-      # Terraform Output
-      # -------------------------------------------------
+      # -----------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -109,23 +126,56 @@ jobs:
 
       - name: Terraform Init
         working-directory: terraform
-        run: terraform init -input=false
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform init -input=false
 
       - name: Terraform Workspace (select or create)
         working-directory: terraform
         shell: bash
         run: |
+          set -euo pipefail
           ENV="${{ github.event.inputs.environment || 'dev' }}"
           terraform workspace select "$ENV" || terraform workspace new "$ENV"
+          terraform workspace show
+
+      # -----------------------------
+      # Verify credentials again right before Terraform Apply
+      # (This catches any step that overwrote AWS env vars)
+      # -----------------------------
+      - name: Verify AWS creds still active (pre-terraform-apply)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Pre-apply identity:"
+          aws sts get-caller-identity
+          echo "AWS_ACCESS_KEY_ID is set: ${AWS_ACCESS_KEY_ID:+yes}"
 
       - name: Terraform Apply
         working-directory: terraform
-        run: terraform apply -auto-approve
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform apply -auto-approve
 
       - name: Terraform Outputs
         working-directory: terraform
         shell: bash
         run: |
+          set -euo pipefail
           echo "api_gateway_url=$(terraform output -raw api_gateway_url 2>/dev/null || true)"
           echo "cloudfront_url=$(terraform output -raw cloudfront_url 2>/dev/null || true)"
           echo "s3_frontend_bucket=$(terraform output -raw s3_frontend_bucket 2>/dev/null || true)"
+
+      # -----------------------------
+      # If state write fails, Terraform writes terraform/errored.tfstate.
+      # Upload it so you can recover with: terraform state push errored.tfstate
+      # -----------------------------
+      - name: Upload errored.tfstate if present
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: errored-tfstate
+          path: terraform/errored.tfstate
+          if-no-files-found: ignore
