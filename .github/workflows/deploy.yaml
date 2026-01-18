@@ -27,14 +27,14 @@ jobs:
 
     env:
       AWS_REGION: eu-central-1
+      AWS_DEFAULT_REGION: eu-central-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_SDK_LOAD_CONFIG: "0"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -------------------------------------------------
-      # OIDC Debug (requests token with AWS audience)
-      # -------------------------------------------------
       - name: Dump GitHub OIDC claims (debug, AWS audience)
         shell: bash
         run: |
@@ -47,9 +47,6 @@ jobs:
           echo "Decoded OIDC claims:"
           echo "$JWT" | jq -R 'split(".") | .[1] | @base64d | fromjson'
 
-      # -------------------------------------------------
-      # AWS Credentials via OIDC (forces aud=sts.amazonaws.com)
-      # -------------------------------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -58,9 +55,6 @@ jobs:
           aws-region: eu-central-1
           audience: sts.amazonaws.com
 
-      # -------------------------------------------------
-      # Verify creds immediately after assume-role
-      # -------------------------------------------------
       - name: Verify AWS creds are active (post-assume)
         shell: bash
         run: |
@@ -69,9 +63,6 @@ jobs:
           echo "AWS_ACCESS_KEY_ID set: ${AWS_ACCESS_KEY_ID:+yes}"
           echo "AWS_SESSION_TOKEN set: ${AWS_SESSION_TOKEN:+yes}"
 
-      # -------------------------------------------------
-      # LOCK AWS ENV VARS (prevents later steps/scripts from clobbering creds)
-      # -------------------------------------------------
       - name: Lock AWS env vars (prevent accidental overwrite)
         shell: bash
         run: |
@@ -80,44 +71,25 @@ jobs:
           echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
           echo "AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN" >> $GITHUB_ENV
           echo "AWS_REGION=$AWS_REGION" >> $GITHUB_ENV
-          echo "AWS_DEFAULT_REGION=$AWS_REGION" >> $GITHUB_ENV
+          echo "AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION" >> $GITHUB_ENV
 
-      # -------------------------------------------------
-      # Python for Lambda build
-      # -------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      # -------------------------------------------------
-      # Build Lambda deployment package
-      # Source: backend/lambda-package
-      # Deps:   backend/requirements.txt
-      # Output: backend/lambda-deployment.zip (Terraform expects this)
-      # -------------------------------------------------
       - name: Build Lambda ZIP
         shell: bash
         run: |
           set -euo pipefail
-          echo "Building Lambda deployment package..."
-
           rm -rf backend/.lambda_build
           mkdir -p backend/.lambda_build
-
           cp -R backend/lambda-package/. backend/.lambda_build/
-
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt -t backend/.lambda_build
-
           (cd backend/.lambda_build && zip -r ../lambda-deployment.zip .)
-
-          echo "Built zip:"
           ls -lh backend/lambda-deployment.zip
 
-      # -------------------------------------------------
-      # Terraform
-      # -------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -139,23 +111,45 @@ jobs:
           terraform workspace select "$ENV" || terraform workspace new "$ENV"
           terraform workspace show
 
-      # -------------------------------------------------
-      # Verify creds again right before apply (detect clobbering)
-      # -------------------------------------------------
-      - name: Verify AWS creds still active (pre-terraform-apply)
+      - name: Verify AWS creds still active (pre-terraform)
         shell: bash
         run: |
           set -euo pipefail
           aws sts get-caller-identity
-          echo "AWS_ACCESS_KEY_ID set: ${AWS_ACCESS_KEY_ID:+yes}"
-          echo "AWS_SESSION_TOKEN set: ${AWS_SESSION_TOKEN:+yes}"
+
+      - name: Terraform AWS identity check (debug)
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform providers
+          aws sts get-caller-identity
+
+      - name: Terraform Plan (save)
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan -out=tfplan
+          terraform show -json tfplan > tfplan.json
+
+      - name: Fail if plan deletes GitHub IAM/OIDC
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -e '
+            ([.resource_changes[]?
+              | select(.type=="aws_iam_role" or .type=="aws_iam_openid_connect_provider")
+              | .change.actions[]] | index("delete")) | not
+          ' tfplan.json
 
       - name: Terraform Apply
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
-          terraform apply -auto-approve
+          terraform apply -auto-approve tfplan
 
       - name: Terraform Outputs
         working-directory: terraform
@@ -166,10 +160,6 @@ jobs:
           echo "cloudfront_url=$(terraform output -raw cloudfront_url 2>/dev/null || true)"
           echo "s3_frontend_bucket=$(terraform output -raw s3_frontend_bucket 2>/dev/null || true)"
 
-      # -------------------------------------------------
-      # If state write fails, Terraform writes terraform/errored.tfstate.
-      # Upload it so you can recover with: terraform state push errored.tfstate
-      # -------------------------------------------------
       - name: Upload errored.tfstate if present
         if: failure()
         uses: actions/upload-artifact@v4
