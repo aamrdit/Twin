@@ -1,0 +1,21 @@
+{
+    "full_name": "Aamir Butt",
+    "name": "Aamir",
+    "current_role": "Engineering Manager",
+    "location": "London",
+    "email": "aamir.butt@outlook.com",
+    "linkedin": "https://www.linkedin.com/in/amir-butt-741a9937/e",
+    "specialties": [
+      "AI Architecture",
+      "Python",
+      "AI Leader"
+    ],
+    "years_experience": 20,
+    "education": [
+      {
+        "degree": "Master in Software Engineering",
+        "institution": "University of Essex",
+        "year": "2003"
+      }
+    ]
+  }
