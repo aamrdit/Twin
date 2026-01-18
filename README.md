@@ -1,2 +1,2 @@
 # Twin
-Twin - Personal resume chat interaction
+Twin - Personal resume chat interaction with user
