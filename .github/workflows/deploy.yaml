@@ -34,16 +34,15 @@ jobs:
       TF_INPUT: "false"
 
     steps:
-      - name: Checkout repository (with submodules)
+      # ✅ Checkout (NO submodules)
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
-          # If your frontend submodule is private, uncomment and create a GH_PAT secret:
-          # token: ${{ secrets.GH_PAT }}
+          submodules: false
 
       # -------------------------------------------------
-      # OIDC Debug (AWS audience)
+      # (Optional) OIDC Debug (AWS audience)
       # -------------------------------------------------
       - name: Dump GitHub OIDC claims (debug, AWS audience)
         shell: bash
@@ -179,7 +178,7 @@ jobs:
           set -euo pipefail
           terraform apply -auto-approve tfplan
 
-      - name: Read Terraform outputs (bucket + cloudfront url)
+      - name: Read Terraform outputs (bucket + urls)
         id: tf
         working-directory: terraform
         shell: bash
@@ -191,11 +190,7 @@ jobs:
 
       # -------------------------------------------------
       # Frontend (Next.js static export -> S3)
-      # IMPORTANT:
-      # Ensure frontend/next.config.(ts|js) includes:
-      #   output: "export"
-      #   images: { unoptimized: true }
-      # This makes `npm run build` generate frontend/out
+      # Requires next.config.ts/js with output: "export"
       # -------------------------------------------------
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -216,26 +211,21 @@ jobs:
             exit 1
           fi
 
-          echo "Frontend dir listing (after submodule checkout):"
+          echo "Frontend dir listing:"
           ls -la frontend
 
           cd frontend
 
           if [ ! -f "package.json" ]; then
-            echo "❌ package.json missing in frontend/. Submodule may not have been fetched or is private."
-            echo "If submodule is private, set checkout token via secrets.GH_PAT"
+            echo "❌ package.json missing in frontend/"
             exit 1
           fi
 
-          echo "Installing dependencies..."
           npm install
-
-          echo "Building..."
           npm run build
 
           if [ ! -f "out/index.html" ]; then
-            echo "❌ out/index.html not found."
-            echo "Make sure next.config is set to output: \"export\""
+            echo "❌ out/index.html not found. Ensure next.config has output: \"export\""
             exit 1
           fi
 
@@ -280,5 +270,3 @@ jobs:
           name: errored-tfstate
           path: terraform/errored.tfstate
           if-no-files-found: ignore
-
-          #Working on frontend submodule changesgit 
