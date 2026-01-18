@@ -171,6 +171,7 @@ jobs:
       # -----------------------------
       # If state write fails, Terraform writes terraform/errored.tfstate.
       # Upload it so you can recover with: terraform state push errored.tfstate
+      # revise new
       # -----------------------------
       - name: Upload errored.tfstate if present
         if: failure()
