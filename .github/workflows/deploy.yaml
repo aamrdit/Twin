@@ -25,7 +25,7 @@ jobs:
     environment: ${{ github.event.inputs.environment || 'dev' }}
 
     steps:
-      # 1️⃣ Checkout repository
+      # 1️⃣ Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -38,12 +38,13 @@ jobs:
           fi
           echo "✅ OIDC token available. Proceeding with AWS role assumption."
 
-      - name: Debug OIDC token info (optional)
+      # Optional debug step
+      - name: Debug OIDC token info
         run: |
           echo "OIDC Request URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
-          echo "OIDC Request Token (truncated): ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:0:10}..."
+          echo "OIDC Token (truncated): ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:0:10}..."
 
-      # 3️⃣ Configure AWS credentials via OIDC
+      # 3️⃣ Configure AWS credentials using OIDC
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -123,9 +124,3 @@ jobs:
           echo "🌐 CloudFront URL: ${{ steps.deploy_outputs.outputs.cloudfront_url }}"
           echo "📡 API Gateway: ${{ steps.deploy_outputs.outputs.api_url }}"
           echo "🪣 Frontend Bucket: ${{ steps.deploy_outputs.outputs.frontend_bucket }}"
-
-      # 1️⃣3️⃣ Debug OIDC token
-      - name: Debug OIDC token
-        run: |
-          echo "OIDC Request URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
-          echo "OIDC Token (truncated): ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:0:10}..."
