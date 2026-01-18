@@ -40,4 +40,3 @@ Thumbs.db
 # AWS
 .aws/
 
-/terraform/github-oidc.tf
