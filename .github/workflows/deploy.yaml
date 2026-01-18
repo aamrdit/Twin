@@ -204,7 +204,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm ci
           npm install
           npm run build
           test -f out/index.html
