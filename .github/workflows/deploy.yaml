@@ -30,11 +30,16 @@ jobs:
       AWS_DEFAULT_REGION: eu-central-1
       AWS_EC2_METADATA_DISABLED: "true"
       AWS_SDK_LOAD_CONFIG: "0"
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # -------------------------------------------------
+      # OIDC Debug (requests token with AWS audience)
+      # -------------------------------------------------
       - name: Dump GitHub OIDC claims (debug, AWS audience)
         shell: bash
         run: |
@@ -47,6 +52,9 @@ jobs:
           echo "Decoded OIDC claims:"
           echo "$JWT" | jq -R 'split(".") | .[1] | @base64d | fromjson'
 
+      # -------------------------------------------------
+      # AWS Credentials via OIDC (forces aud=sts.amazonaws.com)
+      # -------------------------------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -63,6 +71,7 @@ jobs:
           echo "AWS_ACCESS_KEY_ID set: ${AWS_ACCESS_KEY_ID:+yes}"
           echo "AWS_SESSION_TOKEN set: ${AWS_SESSION_TOKEN:+yes}"
 
+      # Lock creds to avoid any later step clobbering them
       - name: Lock AWS env vars (prevent accidental overwrite)
         shell: bash
         run: |
@@ -73,6 +82,9 @@ jobs:
           echo "AWS_REGION=$AWS_REGION" >> $GITHUB_ENV
           echo "AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION" >> $GITHUB_ENV
 
+      # -------------------------------------------------
+      # Python for Lambda build
+      # -------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -82,14 +94,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "Building Lambda deployment package..."
+
           rm -rf backend/.lambda_build
           mkdir -p backend/.lambda_build
+
           cp -R backend/lambda-package/. backend/.lambda_build/
+
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt -t backend/.lambda_build
+
           (cd backend/.lambda_build && zip -r ../lambda-deployment.zip .)
+
+          echo "Built zip:"
           ls -lh backend/lambda-deployment.zip
 
+      # -------------------------------------------------
+      # Terraform
+      # -------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -125,19 +147,38 @@ jobs:
           terraform providers
           aws sts get-caller-identity
 
+      # -------------------------------------------------
+      # Terraform Plan (save) — optionally pass environment var to Terraform
+      # If you DO have a Terraform variable named "environment", keep -var line.
+      # If you do NOT, remove the -var argument.
+      # -------------------------------------------------
       - name: Terraform Plan (save)
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
-          terraform plan -out=tfplan
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          terraform plan -out=tfplan -var="environment=$ENV"
           terraform show -json tfplan > tfplan.json
 
-      - name: Fail if plan deletes GitHub IAM/OIDC
+      # -------------------------------------------------
+      # Guard: show deletes (for debugging) and block IAM/OIDC deletes
+      # -------------------------------------------------
+      - name: Fail if plan deletes GitHub IAM/OIDC (and show deletes)
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Resources planned for deletion:"
+          jq -r '
+            [.resource_changes[]?
+              | select(.change.actions | index("delete"))
+              | "\(.type).\(.name)  actions=\(.change.actions|join(","))"
+            ] | .[]
+          ' tfplan.json || true
+
+          echo "Checking for IAM/OIDC deletes..."
           jq -e '
             ([.resource_changes[]?
               | select(.type=="aws_iam_role" or .type=="aws_iam_openid_connect_provider")
