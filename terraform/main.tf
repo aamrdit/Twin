@@ -264,8 +264,11 @@ resource "aws_lambda_function" "stream" {
 
   environment {
     variables = {
-      AWS_REGION       = var.aws_region
+      #AWS_REGION       = var.aws_region
       BEDROCK_MODEL_ID = var.bedrock_model_id
+      
+      # Optional: if you want to be explicit, use a non-reserved name:
+      BEDROCK_REGION   = var.aws_region
     }
   }
 }
