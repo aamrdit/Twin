@@ -1,6 +1,11 @@
 output "api_gateway_url" {
-  description = "URL of the API Gateway"
+  description = "URL of the HTTP API Gateway (non-streaming)"
   value       = aws_apigatewayv2_api.main.api_endpoint
+}
+
+output "stream_api_url" {
+  description = "URL of the REST API streaming endpoint (POST /chat/stream)"
+  value       = "https://${aws_api_gateway_rest_api.stream.id}.execute-api.${var.aws_region}.amazonaws.com/${aws_api_gateway_stage.stream.stage_name}/chat/stream"
 }
 
 output "cloudfront_url" {
@@ -19,8 +24,13 @@ output "s3_memory_bucket" {
 }
 
 output "lambda_function_name" {
-  description = "Name of the Lambda function"
+  description = "Name of the primary Lambda function"
   value       = aws_lambda_function.api.function_name
+}
+
+output "stream_lambda_function_name" {
+  description = "Name of the streaming Lambda function"
+  value       = aws_lambda_function.stream.function_name
 }
 
 output "custom_domain_url" {

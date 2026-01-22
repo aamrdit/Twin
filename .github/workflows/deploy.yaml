@@ -93,11 +93,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build Lambda ZIP
+      - name: Build Lambda ZIP (FastAPI)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Building Lambda deployment package..."
+          echo "Building Lambda deployment package (FastAPI)..."
 
           rm -rf backend/.lambda_build
           mkdir -p backend/.lambda_build
@@ -111,6 +111,38 @@ jobs:
 
           echo "Built zip:"
           ls -lh backend/lambda-deployment.zip
+
+      # -------------------------------------------------
+      # Node.js (Streaming Lambda packaging)
+      # -------------------------------------------------
+      - name: Setup Node.js (for stream lambda build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build Stream Lambda ZIP (Node.js)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Building Stream Lambda deployment package (Node.js)..."
+
+          if [ ! -d "backend/stream-lambda" ]; then
+            echo "❌ backend/stream-lambda directory not found"
+            exit 1
+          fi
+
+          if [ ! -f "backend/stream-lambda/package.json" ]; then
+            echo "❌ backend/stream-lambda/package.json not found"
+            exit 1
+          fi
+
+          cd backend/stream-lambda
+          npm ci --omit=dev
+          zip -r ../stream-lambda.zip .
+          cd -
+
+          echo "Built stream zip:"
+          ls -lh backend/stream-lambda.zip
 
       # -------------------------------------------------
       # Terraform
@@ -187,16 +219,15 @@ jobs:
           echo "frontend_bucket=$(terraform output -raw s3_frontend_bucket)" >> $GITHUB_OUTPUT
           echo "cloudfront_url=$(terraform output -raw cloudfront_url)" >> $GITHUB_OUTPUT
           echo "api_gateway_url=$(terraform output -raw api_gateway_url)" >> $GITHUB_OUTPUT
+          # Optional output added by new Terraform
+          if terraform output -raw stream_api_url >/dev/null 2>&1; then
+            echo "stream_api_url=$(terraform output -raw stream_api_url)" >> $GITHUB_OUTPUT
+          fi
 
       # -------------------------------------------------
       # Frontend (Next.js static export -> S3)
       # Requires next.config.ts/js with output: "export"
       # -------------------------------------------------
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
       - name: Build Next.js static site (out/)
         shell: bash
         run: |
@@ -261,6 +292,9 @@ jobs:
           echo "✅ Deployment Complete!"
           echo "🌐 CloudFront URL: ${{ steps.tf.outputs.cloudfront_url }}"
           echo "📡 API Gateway:   ${{ steps.tf.outputs.api_gateway_url }}"
+          if [ -n "${{ steps.tf.outputs.stream_api_url }}" ]; then
+            echo "🟣 Stream API:    ${{ steps.tf.outputs.stream_api_url }}"
+          fi
           echo "🪣 Frontend S3:   ${{ steps.tf.outputs.frontend_bucket }}"
 
       - name: Upload errored.tfstate if present

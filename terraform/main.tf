@@ -16,7 +16,9 @@ locals {
   }
 }
 
+############################################
 # S3 bucket for conversation memory
+############################################
 resource "aws_s3_bucket" "memory" {
   bucket = "${local.name_prefix}-memory-${data.aws_caller_identity.current.account_id}"
   tags   = local.common_tags
@@ -39,7 +41,9 @@ resource "aws_s3_bucket_ownership_controls" "memory" {
   }
 }
 
+############################################
 # S3 bucket for frontend static website
+############################################
 resource "aws_s3_bucket" "frontend" {
   bucket = "${local.name_prefix}-frontend-${data.aws_caller_identity.current.account_id}"
   tags   = local.common_tags
@@ -85,7 +89,9 @@ resource "aws_s3_bucket_policy" "frontend" {
   depends_on = [aws_s3_bucket_public_access_block.frontend]
 }
 
-# IAM role for Lambda
+############################################
+# IAM role for primary (FastAPI) Lambda
+############################################
 resource "aws_iam_role" "lambda_role" {
   name = "${local.name_prefix}-lambda-role"
   tags = local.common_tags
@@ -119,7 +125,9 @@ resource "aws_iam_role_policy_attachment" "lambda_s3" {
   role       = aws_iam_role.lambda_role.name
 }
 
-# Lambda function
+############################################
+# Primary Lambda function (FastAPI via Mangum)
+############################################
 resource "aws_lambda_function" "api" {
   filename         = "${path.module}/../backend/lambda-deployment.zip"
   function_name    = "${local.name_prefix}-api"
@@ -129,10 +137,14 @@ resource "aws_lambda_function" "api" {
   runtime          = "python3.12"
   architectures    = ["x86_64"]
   timeout          = var.lambda_timeout
+  memory_size      = 1024
   tags             = local.common_tags
 
   environment {
     variables = {
+      # Make region explicit for boto3 client selection
+      DEFAULT_AWS_REGION = var.aws_region
+
       CORS_ORIGINS     = var.use_custom_domain ? "https://${var.root_domain},https://www.${var.root_domain}" : "https://${aws_cloudfront_distribution.main.domain_name}"
       S3_BUCKET        = aws_s3_bucket.memory.id
       USE_S3           = "true"
@@ -140,11 +152,12 @@ resource "aws_lambda_function" "api" {
     }
   }
 
-  # Ensure Lambda waits for the distribution to exist
   depends_on = [aws_cloudfront_distribution.main]
 }
 
-# API Gateway HTTP API
+############################################
+# API Gateway HTTP API (non-streaming)
+############################################
 resource "aws_apigatewayv2_api" "main" {
   name          = "${local.name_prefix}-api-gateway"
   protocol_type = "HTTP"
@@ -172,12 +185,13 @@ resource "aws_apigatewayv2_stage" "default" {
 }
 
 resource "aws_apigatewayv2_integration" "lambda" {
-  api_id           = aws_apigatewayv2_api.main.id
-  integration_type = "AWS_PROXY"
-  integration_uri  = aws_lambda_function.api.invoke_arn
+  api_id                 = aws_apigatewayv2_api.main.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.api.invoke_arn
+  payload_format_version = "2.0"
+  timeout_milliseconds   = 29000
 }
 
-# API Gateway Routes
 resource "aws_apigatewayv2_route" "get_root" {
   api_id    = aws_apigatewayv2_api.main.id
   route_key = "GET /"
@@ -196,7 +210,6 @@ resource "aws_apigatewayv2_route" "get_health" {
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 
-# Lambda permission for API Gateway
 resource "aws_lambda_permission" "api_gw" {
   statement_id  = "AllowExecutionFromAPIGateway"
   action        = "lambda:InvokeFunction"
@@ -205,10 +218,197 @@ resource "aws_lambda_permission" "api_gw" {
   source_arn    = "${aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
 
-# CloudFront distribution
+############################################
+# Streaming stack: REST API + streaming Lambda
+############################################
+
+# IAM role for streaming Lambda (Node.js)
+resource "aws_iam_role" "stream_lambda_role" {
+  name = "${local.name_prefix}-stream-lambda-role"
+  tags = local.common_tags
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
+        Principal = { Service = "lambda.amazonaws.com" }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "stream_lambda_basic" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  role       = aws_iam_role.stream_lambda_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "stream_lambda_bedrock" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonBedrockFullAccess"
+  role       = aws_iam_role.stream_lambda_role.name
+}
+
+# Streaming Lambda (Node.js zip you will build)
+resource "aws_lambda_function" "stream" {
+  filename         = "${path.module}/../backend/stream-lambda.zip"
+  function_name    = "${local.name_prefix}-stream"
+  role             = aws_iam_role.stream_lambda_role.arn
+  handler          = "index.handler"
+  source_code_hash = filebase64sha256("${path.module}/../backend/stream-lambda.zip")
+  runtime          = "nodejs20.x"
+  architectures    = ["x86_64"]
+  timeout          = 120
+  memory_size      = 1024
+  tags             = local.common_tags
+
+  environment {
+    variables = {
+      AWS_REGION       = var.aws_region
+      BEDROCK_MODEL_ID = var.bedrock_model_id
+    }
+  }
+}
+
+# REST API (v1) with streaming enabled integration
+resource "aws_api_gateway_rest_api" "stream" {
+  name        = "${local.name_prefix}-stream-rest-api"
+  description = "REST API only for /chat/stream (response streaming)"
+  tags        = local.common_tags
+
+  endpoint_configuration {
+    types = ["REGIONAL"]
+  }
+}
+
+# /chat
+resource "aws_api_gateway_resource" "stream_chat" {
+  rest_api_id = aws_api_gateway_rest_api.stream.id
+  parent_id   = aws_api_gateway_rest_api.stream.root_resource_id
+  path_part   = "chat"
+}
+
+# /chat/stream
+resource "aws_api_gateway_resource" "stream_chat_stream" {
+  rest_api_id = aws_api_gateway_rest_api.stream.id
+  parent_id   = aws_api_gateway_resource.stream_chat.id
+  path_part   = "stream"
+}
+
+# POST /chat/stream
+resource "aws_api_gateway_method" "stream_post" {
+  rest_api_id   = aws_api_gateway_rest_api.stream.id
+  resource_id   = aws_api_gateway_resource.stream_chat_stream.id
+  http_method   = "POST"
+  authorization = "NONE"
+}
+
+# Lambda proxy integration with response streaming (STREAM) and special URI
+resource "aws_api_gateway_integration" "stream_post" {
+  rest_api_id = aws_api_gateway_rest_api.stream.id
+  resource_id = aws_api_gateway_resource.stream_chat_stream.id
+  http_method = aws_api_gateway_method.stream_post.http_method
+
+  type                    = "AWS_PROXY"
+  integration_http_method = "POST"
+
+  # IMPORTANT: response streaming requires "response-streaming-invocations"
+  # and response_transfer_mode = STREAM
+  uri = "arn:aws:apigateway:${var.aws_region}:lambda:path/2021-11-15/functions/${aws_lambda_function.stream.arn}/response-streaming-invocations"
+
+  response_transfer_mode = "STREAM"
+  timeout_milliseconds   = 90000
+}
+
+# CORS preflight for /chat/stream
+resource "aws_api_gateway_method" "stream_options" {
+  rest_api_id   = aws_api_gateway_rest_api.stream.id
+  resource_id   = aws_api_gateway_resource.stream_chat_stream.id
+  http_method   = "OPTIONS"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "stream_options" {
+  rest_api_id = aws_api_gateway_rest_api.stream.id
+  resource_id = aws_api_gateway_resource.stream_chat_stream.id
+  http_method = aws_api_gateway_method.stream_options.http_method
+  type        = "MOCK"
+
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_method_response" "stream_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.stream.id
+  resource_id = aws_api_gateway_resource.stream_chat_stream.id
+  http_method = aws_api_gateway_method.stream_options.http_method
+  status_code = "200"
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = true
+    "method.response.header.Access-Control-Allow-Methods" = true
+    "method.response.header.Access-Control-Allow-Origin"  = true
+  }
+}
+
+resource "aws_api_gateway_integration_response" "stream_options_200" {
+  rest_api_id = aws_api_gateway_rest_api.stream.id
+  resource_id = aws_api_gateway_resource.stream_chat_stream.id
+  http_method = aws_api_gateway_method.stream_options.http_method
+  status_code = aws_api_gateway_method_response.stream_options_200.status_code
+
+  response_parameters = {
+    "method.response.header.Access-Control-Allow-Headers" = "'Content-Type,Authorization'"
+    "method.response.header.Access-Control-Allow-Methods" = "'OPTIONS,POST'"
+    "method.response.header.Access-Control-Allow-Origin"  = "'*'"
+  }
+
+  depends_on = [aws_api_gateway_integration.stream_options]
+}
+
+# Deployment + stage
+resource "aws_api_gateway_deployment" "stream" {
+  rest_api_id = aws_api_gateway_rest_api.stream.id
+
+  triggers = {
+    redeploy = sha1(jsonencode([
+      aws_api_gateway_method.stream_post.id,
+      aws_api_gateway_integration.stream_post.id,
+      aws_api_gateway_method.stream_options.id,
+      aws_api_gateway_integration.stream_options.id,
+      aws_api_gateway_integration_response.stream_options_200.id
+    ]))
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.stream_post,
+    aws_api_gateway_integration_response.stream_options_200
+  ]
+}
+
+resource "aws_api_gateway_stage" "stream" {
+  rest_api_id   = aws_api_gateway_rest_api.stream.id
+  deployment_id = aws_api_gateway_deployment.stream.id
+  stage_name    = "prod"
+  tags          = local.common_tags
+}
+
+# Allow REST API to invoke the streaming Lambda
+resource "aws_lambda_permission" "stream_api_gw" {
+  statement_id  = "AllowExecutionFromStreamRestApi"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.stream.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.stream.execution_arn}/*/*"
+}
+
+############################################
+# CloudFront distribution (unchanged)
+############################################
 resource "aws_cloudfront_distribution" "main" {
   aliases = local.aliases
-  
+
   viewer_certificate {
     acm_certificate_arn            = var.use_custom_domain ? aws_acm_certificate.site[0].arn : null
     cloudfront_default_certificate = var.use_custom_domain ? false : true
@@ -264,7 +464,9 @@ resource "aws_cloudfront_distribution" "main" {
   }
 }
 
-# Optional: Custom domain configuration (only created when use_custom_domain = true)
+############################################
+# Optional: Custom domain configuration (unchanged)
+############################################
 data "aws_route53_zone" "root" {
   count        = var.use_custom_domain ? 1 : 0
   name         = var.root_domain
