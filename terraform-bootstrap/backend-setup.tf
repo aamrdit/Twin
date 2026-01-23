@@ -1,6 +1,7 @@
 # This file creates the S3 bucket and DynamoDB table for Terraform state.
 # Run this once per AWS account (bootstrap), then keep it in the terraform-bootstrap stack.
 # IMPORTANT: We add prevent_destroy to protect the backend from accidental teardown.
+data "aws_caller_identity" "current" {}
 
 resource "aws_s3_bucket" "terraform_state" {
   bucket = "twin-terraform-state-${data.aws_caller_identity.current.account_id}"

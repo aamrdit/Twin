@@ -1,7 +1,6 @@
 ############################################
 # GitHub OIDC Integration for AWS (GLOBAL)
 # Place this in terraform-bootstrap/
-# Keeps OIDC provider + GitHub Actions role out of env destroy stack.
 ############################################
 
 variable "github_repository" {
@@ -22,21 +21,15 @@ variable "github_role_name" {
 resource "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 
-  client_id_list = [
-    "sts.amazonaws.com"
-  ]
+  client_id_list = ["sts.amazonaws.com"]
 
-  # GitHub Actions OIDC root CA thumbprint (may change in future)
   thumbprint_list = [
     "1b511abead59c6ce207077c0bf0e0043b1382612"
   ]
 
   lifecycle {
     prevent_destroy = true
-    ignore_changes = [
-      thumbprint_list,
-      client_id_list
-    ]
+    ignore_changes  = [thumbprint_list, client_id_list]
   }
 
   tags = {
@@ -53,24 +46,21 @@ resource "aws_iam_role" "github_actions" {
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.github.arn
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.github.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            # Allows any environment in this repo to assume the role
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:*"
-          }
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:*"
         }
       }
-    ]
+    }]
   })
 
   lifecycle {
@@ -85,7 +75,7 @@ resource "aws_iam_role" "github_actions" {
 }
 
 ############################################
-# Attach Managed Policies
+# Managed Policy Attachments
 ############################################
 resource "aws_iam_role_policy_attachment" "github_lambda" {
   policy_arn = "arn:aws:iam::aws:policy/AWSLambda_FullAccess"
@@ -133,7 +123,7 @@ resource "aws_iam_role_policy_attachment" "github_route53" {
 }
 
 ############################################
-# Inline Policy for additional permissions
+# Inline Policy: Terraform-friendly IAM cleanup
 ############################################
 resource "aws_iam_role_policy" "github_additional" {
   name = "github-actions-additional"
@@ -142,27 +132,36 @@ resource "aws_iam_role_policy" "github_additional" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # General read/debug
+      {
+        Effect = "Allow"
+        Action = [
+          "sts:GetCallerIdentity",
+          "iam:GetRole",
+          "iam:ListRolePolicies",
+          "iam:ListAttachedRolePolicies",
+          "iam:GetRolePolicy"
+        ]
+        Resource = "*"
+      },
+
+      # Allow Terraform to fully delete roles it created for the app (Lambda execution roles, etc.)
+      # NOTE: This DOES NOT allow deleting the GitHub role itself, because prevent_destroy blocks it anyway.
       {
         Effect = "Allow"
         Action = [
           "iam:CreateRole",
           "iam:DeleteRole",
+          "iam:UpdateAssumeRolePolicy",
           "iam:AttachRolePolicy",
           "iam:DetachRolePolicy",
           "iam:PutRolePolicy",
           "iam:DeleteRolePolicy",
-          "iam:GetRole",
-          "iam:GetRolePolicy",
-          "iam:ListRolePolicies",
-          "iam:ListAttachedRolePolicies",
-          "iam:UpdateAssumeRolePolicy",
-          "iam:PassRole",
           "iam:TagRole",
           "iam:UntagRole",
-          "iam:ListInstanceProfilesForRole",
-          "sts:GetCallerIdentity"
+          "iam:PassRole"
         ]
-        Resource = "*"
+        Resource = "arn:aws:iam::*:role/twin-*"
       }
     ]
   })
