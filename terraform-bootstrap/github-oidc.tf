@@ -1,14 +1,19 @@
 ############################################
-# GitHub OIDC Integration for AWS
-# - Prevents accidental deletion of OIDC provider and role
-# - Correct repo casing: aamrdit/Twin
-# - Environment-based sub claim: repo:aamrdit/Twin:environment:*
+# GitHub OIDC Integration for AWS (GLOBAL)
+# Place this in terraform-bootstrap/
+# Keeps OIDC provider + GitHub Actions role out of env destroy stack.
 ############################################
 
 variable "github_repository" {
   description = "GitHub repository in format 'owner/repo' (case sensitive). Example: aamrdit/Twin"
   type        = string
   default     = "aamrdit/Twin"
+}
+
+variable "github_role_name" {
+  description = "IAM role name assumed by GitHub Actions via OIDC"
+  type        = string
+  default     = "github-actions-twin-deploy"
 }
 
 ############################################
@@ -21,15 +26,13 @@ resource "aws_iam_openid_connect_provider" "github" {
     "sts.amazonaws.com"
   ]
 
-  # From GitHub documentation (verify if GitHub rotates in future)
+  # GitHub Actions OIDC root CA thumbprint (may change in future)
   thumbprint_list = [
     "1b511abead59c6ce207077c0bf0e0043b1382612"
   ]
 
   lifecycle {
     prevent_destroy = true
-
-    # Optional safety: avoid churn if AWS/GitHub changes ordering/representation
     ignore_changes = [
       thumbprint_list,
       client_id_list
@@ -43,10 +46,10 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 ############################################
-# IAM Role for GitHub Actions
+# IAM Role for GitHub Actions (GLOBAL)
 ############################################
 resource "aws_iam_role" "github_actions" {
-  name = "github-actions-twin-deploy"
+  name = var.github_role_name
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -62,27 +65,27 @@ resource "aws_iam_role" "github_actions" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            # IMPORTANT: Match real repo casing + environment-based workflow runs
-            "token.actions.githubusercontent.com:sub" = "repo:aamrdit/Twin:environment:*"
+            # Allows any environment in this repo to assume the role
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:environment:*"
           }
         }
       }
     ]
   })
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = {
     Name       = "GitHub Actions Deploy Role"
     Repository = var.github_repository
     ManagedBy  = "terraform"
   }
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 ############################################
-# Attach Managed Policies (broad; you can tighten later)
+# Attach Managed Policies
 ############################################
 resource "aws_iam_role_policy_attachment" "github_lambda" {
   policy_arn = "arn:aws:iam::aws:policy/AWSLambda_FullAccess"
@@ -165,9 +168,6 @@ resource "aws_iam_role_policy" "github_additional" {
   })
 }
 
-############################################
-# Output
-############################################
 output "github_actions_role_arn" {
   value = aws_iam_role.github_actions.arn
 }
