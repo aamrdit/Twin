@@ -1,9 +1,15 @@
-# This file creates the S3 bucket and DynamoDB table for Terraform state
-# Run this once per AWS account, then remove the file
+# This file creates the S3 bucket and DynamoDB table for Terraform state.
+# Run this once per AWS account (bootstrap), then keep it in the terraform-bootstrap stack.
+# IMPORTANT: We add prevent_destroy to protect the backend from accidental teardown.
 
 resource "aws_s3_bucket" "terraform_state" {
   bucket = "twin-terraform-state-${data.aws_caller_identity.current.account_id}"
-  
+
+  # Protect the state bucket from being destroyed by mistake.
+  lifecycle {
+    prevent_destroy = true
+  }
+
   tags = {
     Name        = "Terraform State Store"
     Environment = "global"
@@ -13,7 +19,7 @@ resource "aws_s3_bucket" "terraform_state" {
 
 resource "aws_s3_bucket_versioning" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
-  
+
   versioning_configuration {
     status = "Enabled"
   }
@@ -42,6 +48,11 @@ resource "aws_dynamodb_table" "terraform_locks" {
   name         = "twin-terraform-locks"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "LockID"
+
+  # Protect the lock table from being destroyed by mistake.
+  lifecycle {
+    prevent_destroy = true
+  }
 
   attribute {
     name = "LockID"

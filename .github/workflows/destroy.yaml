@@ -112,7 +112,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          terraform init -input=false
+          terraform init -input=false -no-color
 
       - name: Terraform Workspace (select)
         working-directory: terraform
@@ -123,12 +123,32 @@ jobs:
           terraform workspace select "$ENV"
           terraform workspace show
 
+      # -------------------------------------------------
+      # Fix 1: Treat exit code 2 (changes present) as success
+      # -------------------------------------------------
       - name: Terraform Plan Destroy (preview only)
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
-          terraform plan -destroy -no-color
+
+          # Capture exit code: 0=no changes, 2=changes present, 1=error
+          set +e
+          terraform plan -destroy -no-color -detailed-exitcode
+          code=$?
+          set -e
+
+          echo "Terraform plan exit code: $code"
+
+          if [ "$code" -eq 0 ]; then
+            echo "No changes."
+          elif [ "$code" -eq 2 ]; then
+            echo "Destroy changes detected (expected)."
+            exit 0
+          else
+            echo "Terraform plan failed."
+            exit "$code"
+          fi
 
       - name: Terraform Destroy
         working-directory: terraform
