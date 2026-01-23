@@ -21,6 +21,7 @@ locals {
 ############################################
 resource "aws_s3_bucket" "memory" {
   bucket = "${local.name_prefix}-memory-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
   tags   = local.common_tags
 }
 
@@ -46,6 +47,7 @@ resource "aws_s3_bucket_ownership_controls" "memory" {
 ############################################
 resource "aws_s3_bucket" "frontend" {
   bucket = "${local.name_prefix}-frontend-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true
   tags   = local.common_tags
 }
 
