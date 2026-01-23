@@ -1,68 +1,111 @@
-name: Destroy Environment
+name: Destroy Digital Twin
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to destroy'
+        description: "Environment to destroy"
         required: true
+        default: dev
         type: choice
         options:
           - dev
           - test
           - prod
-      confirm:
-        description: 'Type the environment name to confirm destruction'
-        required: true
-
-permissions:
-  id-token: write
-  contents: read
 
 jobs:
   destroy:
     name: Destroy ${{ github.event.inputs.environment }}
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment }}
-    
+
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      AWS_REGION: eu-central-1
+      AWS_DEFAULT_REGION: eu-central-1
+      TF_VAR_aws_region: eu-central-1
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_SDK_LOAD_CONFIG: "0"
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+
     steps:
-      - name: Verify confirmation
-        run: |
-          if [ "${{ github.event.inputs.confirm }}" != "${{ github.event.inputs.environment }}" ]; then
-            echo "❌ Confirmation does not match environment name!"
-            echo "You entered: '${{ github.event.inputs.confirm }}'"
-            echo "Expected: '${{ github.event.inputs.environment }}'"
-            exit 1
-          fi
-          echo "✅ Destruction confirmed for ${{ github.event.inputs.environment }}"
-
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
 
+      # -------------------------------------------------
+      # AWS Credentials via OIDC
+      # -------------------------------------------------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: github-actions-destroy
-          aws-region: ${{ secrets.DEFAULT_AWS_REGION }}
+          aws-region: eu-central-1
+          audience: sts.amazonaws.com
 
+      - name: Verify AWS creds are active
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
+
+      # -------------------------------------------------
+      # Terraform
+      # -------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_wrapper: false  # Important: disable wrapper to get raw outputs
+          terraform_wrapper: false
 
-      - name: Run Destroy Script
+      - name: Terraform Init
+        working-directory: terraform
+        shell: bash
         run: |
-          # Set environment variables for the script
-          export AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
-          export DEFAULT_AWS_REGION=${{ secrets.DEFAULT_AWS_REGION }}
-          
-          # Make script executable and run it
-          chmod +x scripts/destroy.sh
-          ./scripts/destroy.sh ${{ github.event.inputs.environment }}
-        env:
-          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+          set -euo pipefail
+          terraform init -input=false
 
-      - name: Destruction Complete
+      - name: Terraform Workspace (select)
+        working-directory: terraform
+        shell: bash
         run: |
-          echo "✅ Environment ${{ github.event.inputs.environment }} has been destroyed!"
+          set -euo pipefail
+          ENV="${{ github.event.inputs.environment }}"
+          terraform workspace select "$ENV"
+          terraform workspace show
+
+      # Optional: show what will be destroyed before doing it
+      - name: Terraform Plan Destroy (preview)
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform plan -destroy -out=tfdestroy
+          terraform show -json tfdestroy > tfdestroy.json
+
+          echo "Resources planned for deletion:"
+          jq -r '
+            [.resource_changes[]?
+              | select(.change.actions | index("delete"))
+              | "\(.type).\(.name)  actions=\(.change.actions|join(","))"
+            ] | .[]
+          ' tfdestroy.json || true
+
+      - name: Terraform Destroy
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform destroy -auto-approve
+
+      - name: Destroy Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "✅ Destroy complete for environment: ${{ github.event.inputs.environment }}"
