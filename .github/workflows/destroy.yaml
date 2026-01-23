@@ -57,6 +57,49 @@ jobs:
           aws sts get-caller-identity
 
       # -------------------------------------------------
+      # Build artifacts required by Terraform (zip files)
+      # -------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Lambda ZIP (FastAPI) for destroy evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Building FastAPI Lambda zip (required for terraform destroy evaluation)..."
+
+          rm -rf backend/.lambda_build
+          mkdir -p backend/.lambda_build
+
+          cp -R backend/lambda-package/. backend/.lambda_build/
+
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -t backend/.lambda_build
+
+          (cd backend/.lambda_build && zip -r ../lambda-deployment.zip .)
+          ls -lh backend/lambda-deployment.zip
+
+      - name: Setup Node.js (for stream lambda build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build Stream Lambda ZIP (Node.js) for destroy evaluation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Building Stream Lambda zip (required for terraform destroy evaluation)..."
+
+          cd backend/stream-lambda
+          npm ci --omit=dev
+          zip -r ../stream-lambda.zip .
+          cd -
+
+          ls -lh backend/stream-lambda.zip
+
+      # -------------------------------------------------
       # Terraform
       # -------------------------------------------------
       - name: Setup Terraform
@@ -80,7 +123,6 @@ jobs:
           terraform workspace select "$ENV"
           terraform workspace show
 
-      # Optional: show what will be destroyed before doing it
       - name: Terraform Plan Destroy (preview)
         working-directory: terraform
         shell: bash
