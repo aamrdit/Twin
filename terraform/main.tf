@@ -20,7 +20,7 @@ locals {
 # S3 bucket for conversation memory
 ############################################
 resource "aws_s3_bucket" "memory" {
-  bucket = "${local.name_prefix}-memory-${data.aws_caller_identity.current.account_id}"
+  bucket = "${local.name_prefix}-memory-${data.aws_caller_identity.current.account_id}"git 
   force_destroy = true
   tags   = local.common_tags
 }
