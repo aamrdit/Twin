@@ -1,7 +1,7 @@
 project_name             = "twin"
 environment              = "dev"
 #bedrock_model_id         = "amazon.nova-micro-v1:0"
-bedrock_model_id         = "amazon.nova-lite-v1:0"
+bedrock_model_id         = "arn:aws:bedrock:eu-central-1:246728976544:inference-profile/global.amazon.nova-2-lite-v1:0"
 
 lambda_timeout           = 60
 api_throttle_burst_limit = 10
