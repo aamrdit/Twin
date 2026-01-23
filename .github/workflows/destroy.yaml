@@ -57,7 +57,7 @@ jobs:
           aws sts get-caller-identity
 
       # -------------------------------------------------
-      # Build artifacts required by Terraform (zip files)
+      # Build artifacts required by Terraform evaluation (zip files)
       # -------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -68,7 +68,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Building FastAPI Lambda zip (required for terraform destroy evaluation)..."
+          echo "Building FastAPI Lambda zip..."
 
           rm -rf backend/.lambda_build
           mkdir -p backend/.lambda_build
@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Building Stream Lambda zip (required for terraform destroy evaluation)..."
+          echo "Building Stream Lambda zip..."
 
           cd backend/stream-lambda
           npm ci --omit=dev
@@ -123,30 +123,20 @@ jobs:
           terraform workspace select "$ENV"
           terraform workspace show
 
-      - name: Terraform Plan Destroy (preview)
+      - name: Terraform Plan Destroy (preview only)
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
-          terraform destroy -auto-approve || (echo "==== DESTROY FAILED ====" && exit 1)
-          terraform plan -destroy -out=tfdestroy
-          terraform show -json tfdestroy > tfdestroy.json
-
-          echo "Resources planned for deletion:"
-          jq -r '
-            [.resource_changes[]?
-              | select(.change.actions | index("delete"))
-              | "\(.type).\(.name)  actions=\(.change.actions|join(","))"
-            ] | .[]
-          ' tfdestroy.json || true
+          terraform plan -destroy -no-color
 
       - name: Terraform Destroy
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
-          terraform destroy -auto-approve || (echo "==== DESTROY FAILED ====" && exit 1)
-          terraform destroy -auto-approve
+          export TF_LOG=ERROR
+          terraform destroy -auto-approve -no-color
 
       - name: Destroy Summary
         shell: bash
