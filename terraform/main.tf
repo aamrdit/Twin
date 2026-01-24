@@ -20,9 +20,16 @@ locals {
 # S3 bucket for conversation memory
 ############################################
 resource "aws_s3_bucket" "memory" {
-  bucket = "${local.name_prefix}-memory-${data.aws_caller_identity.current.account_id}"
+  bucket        = "${local.name_prefix}-memory-${data.aws_caller_identity.current.account_id}"
   force_destroy = true
-  tags   = local.common_tags
+  tags          = local.common_tags
+
+  lifecycle {
+    precondition {
+      condition     = var.environment == terraform.workspace
+      error_message = "Workspace (${terraform.workspace}) does not match var.environment (${var.environment})."
+    }
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "memory" {
@@ -135,8 +142,8 @@ resource "aws_lambda_function" "api" {
   function_name    = "${local.name_prefix}-api"
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_handler.handler"
-  #source_code_hash = filebase64sha256("${path.module}/../backend/lambda-deployment.zip")
-  source_code_hash = fileexists("${path.module}/../backend/stream-lambda.zip") ? filebase64sha256("${path.module}/../backend/stream-lambda.zip") : null
+
+  source_code_hash = fileexists("${path.module}/../backend/lambda-deployment.zip") ? filebase64sha256("${path.module}/../backend/lambda-deployment.zip") : null
 
   runtime          = "python3.12"
   architectures    = ["x86_64"]
@@ -146,13 +153,11 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      # Make region explicit for boto3 client selection
       DEFAULT_AWS_REGION = var.aws_region
-
-      CORS_ORIGINS     = var.use_custom_domain ? "https://${var.root_domain},https://www.${var.root_domain}" : "https://${aws_cloudfront_distribution.main.domain_name}"
-      S3_BUCKET        = aws_s3_bucket.memory.id
-      USE_S3           = "true"
-      BEDROCK_MODEL_ID = var.bedrock_model_id
+      CORS_ORIGINS       = var.use_custom_domain ? "https://${var.root_domain},https://www.${var.root_domain}" : "https://${aws_cloudfront_distribution.main.domain_name}"
+      S3_BUCKET          = aws_s3_bucket.memory.id
+      USE_S3             = "true"
+      BEDROCK_MODEL_ID   = var.bedrock_model_id
     }
   }
 
@@ -563,5 +568,14 @@ resource "aws_route53_record" "alias_www_ipv6" {
     name                   = aws_cloudfront_distribution.main.domain_name
     zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
     evaluate_target_health = false
+  }
+}
+
+resource "null_resource" "env_guard" {
+  lifecycle {
+    precondition {
+      condition     = var.environment == terraform.workspace
+      error_message = "Workspace (${terraform.workspace}) does not match var.environment (${var.environment})."
+    }
   }
 }

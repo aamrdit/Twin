@@ -26,9 +26,16 @@ jobs:
       contents: read
 
     env:
+      # -----------------------------
+      # Global env
+      # -----------------------------
       AWS_REGION: eu-central-1
       AWS_DEFAULT_REGION: eu-central-1
       TF_VAR_aws_region: eu-central-1
+
+      # Pass environment into Terraform explicitly (defense-in-depth)
+      TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+
       AWS_EC2_METADATA_DISABLED: "true"
       AWS_SDK_LOAD_CONFIG: "0"
       TF_IN_AUTOMATION: "true"
@@ -169,6 +176,15 @@ jobs:
           terraform workspace select "$ENV" || terraform workspace new "$ENV"
           terraform workspace show
 
+      - name: Verify Terraform env vars (debug)
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "workspace=$(terraform workspace show)"
+          echo "TF_VAR_environment=${TF_VAR_environment:-<unset>}"
+          echo "TF_VAR_aws_region=${TF_VAR_aws_region:-<unset>}"
+
       - name: Verify AWS creds still active (pre-terraform)
         shell: bash
         run: |
@@ -180,8 +196,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          terraform plan -out=tfplan
+          ENV="${{ github.event.inputs.environment || 'dev' }}"
+          terraform plan -out=tfplan -var-file="${ENV}.tfvars"
           terraform show -json tfplan > tfplan.json
+
+      - name: Fail if prod plan contains dev names
+        if: ${{ github.event.inputs.environment == 'prod' }}
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform show -no-color tfplan | grep -q "twin-dev-" && {
+            echo "❌ prod deploy is planning dev resources (twin-dev- detected)."
+            exit 1
+          } || true
 
       - name: Fail if plan deletes GitHub IAM/OIDC (and show deletes)
         working-directory: terraform
@@ -220,7 +248,6 @@ jobs:
           echo "frontend_bucket=$(terraform output -raw s3_frontend_bucket)" >> $GITHUB_OUTPUT
           echo "cloudfront_url=$(terraform output -raw cloudfront_url)" >> $GITHUB_OUTPUT
           echo "api_gateway_url=$(terraform output -raw api_gateway_url)" >> $GITHUB_OUTPUT
-          # Optional output added by new Terraform
           if terraform output -raw stream_api_url >/dev/null 2>&1; then
             echo "stream_api_url=$(terraform output -raw stream_api_url)" >> $GITHUB_OUTPUT
           fi
