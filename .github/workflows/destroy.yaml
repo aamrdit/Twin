@@ -114,32 +114,37 @@ jobs:
           set -euo pipefail
           terraform init -input=false -no-color
 
-      - name: Terraform Workspace (select)
+      - name: Terraform Workspace (select or create)
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
           ENV="${{ github.event.inputs.environment }}"
-          terraform workspace select "$ENV"
+          terraform workspace select "$ENV" || terraform workspace new "$ENV"
           terraform workspace show
 
       # -------------------------------------------------
-      # Fix 1: Treat exit code 2 (changes present) as success
+      # Plan Destroy (treat exit code 2 as success)
       # -------------------------------------------------
       - name: Terraform Plan Destroy (preview only)
         working-directory: terraform
         shell: bash
         run: |
           set -euo pipefail
+          ENV="${{ github.event.inputs.environment }}"
+          VAR_FILE="${ENV}.tfvars"
+
+          test -f "$VAR_FILE" || { echo "❌ Missing terraform/$VAR_FILE"; ls -la; exit 1; }
 
           # Capture exit code: 0=no changes, 2=changes present, 1=error
           set +e
-          terraform plan -destroy -no-color -detailed-exitcode
+          terraform plan -destroy -no-color -detailed-exitcode \
+            -var-file="$VAR_FILE" \
+            -var="environment=$ENV"
           code=$?
           set -e
 
           echo "Terraform plan exit code: $code"
-
           if [ "$code" -eq 0 ]; then
             echo "No changes."
           elif [ "$code" -eq 2 ]; then
@@ -155,8 +160,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ENV="${{ github.event.inputs.environment }}"
+          VAR_FILE="${ENV}.tfvars"
+
+          test -f "$VAR_FILE" || { echo "❌ Missing terraform/$VAR_FILE"; ls -la; exit 1; }
+
           export TF_LOG=ERROR
-          terraform destroy -auto-approve -no-color
+          terraform destroy -auto-approve -no-color \
+            -var-file="$VAR_FILE" \
+            -var="environment=$ENV"
 
       - name: Destroy Summary
         shell: bash
