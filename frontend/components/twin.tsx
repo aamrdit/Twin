@@ -97,7 +97,7 @@ export default function Twin() {
     const [hasAvatar, setHasAvatar] = useState(false);
     useEffect(() => {
         // Check if avatar.png exists
-        fetch('/avatar.png', { method: 'HEAD' })
+        fetch('/avatar.jpg', { method: 'HEAD' })
             .then(res => setHasAvatar(res.ok))
             .catch(() => setHasAvatar(false));
     }, []);
@@ -110,7 +110,7 @@ export default function Twin() {
                     <Bot className="w-6 h-6" />
                     AI Digital Twin
                 </h2>
-                <p className="text-sm text-slate-300 mt-1">Your AI course companion</p>
+                <p className="text-sm text-slate-300 mt-1">Your AI Assistant</p>
             </div>
 
             {/* Messages */}
